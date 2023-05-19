@@ -1,0 +1,80 @@
+function [final_dec, dec_prob] = artefact_detection(data, resnet)
+% This function is a slightly modified
+% "apply_artefact_detection_published_njs_v1.m" function, with the
+% resampling removed as now resampling is performed outside of the
+% function
+
+% This function applies the Artefact Detection Algorithm from Webb et al
+% that is published in Computer Methods and Programs in Biomedicine. It 
+% involves a Residual Neural Network trained
+% on 79 neontal recordings, and includes steps of probability weighting and
+% temproal smoothing. It outputs a label for each 4 second epoch of data (2
+% second overlap), with these labels either being clean EEG (1) or
+% aretfact: device interference (2), EMG (3), movement (4), electrode pop
+% (5), or biological rhythms (6).
+% 
+% Inputs:   data  - The EEG data (ideally recorded from a bipolar montage). A K x N matric where K is the number of channels and N is the number of samples in time 
+%           fs    - the sampling frequency. 
+%           resnet - the residual neural network
+%
+%
+% Outputs:  final_dec   - The matrix containing the label for each epoch. 
+%                       The matrix is of size 'number of channels' x 
+%                       'number of epochs'
+%           dec_prob    - For each epoch on each channel, the vector of 
+%                       probabilities for each artefact type is given. 
+%                       These probabilties are post the weighting and 
+%                       temporal averaging process.
+
+epl = 4; % Epoch Length
+ts = 2; % Time shift during epoch extraction
+fs = 256; % required frequency
+
+% number of blocks/epochs
+
+% length(data)
+% % %data = resample(data', fs1, fs)';
+% data = resample(data', fs, fs1)'; % to delete
+% length(data)
+
+
+
+block_no = floor((length(data)/fs/ts))-1;
+w_opt = [5 5 7 11 3 29]; % size of the smoothing window in 2s epochs
+%w_opt = [1 1 1 1 1 1];
+class_no = 6; % Nubmer of classes
+
+% APPLY NETWORK ON A CHANNEL BY CHANNEL BASIS
+A = size(data);
+dec = NaN*ones(A(1),block_no); art = ones(A(1),block_no);
+dec_prob = NaN*ones(A(1), block_no, class_no);
+for z1 = 1:A(1)
+    % LOAD UP ALL SEGEMENTS FROM ONE CHANNEL
+    dat = zeros(block_no, epl*fs); 
+    for z2 = 1:block_no
+         t1 = (z2-1)*ts*fs+1; t2 = t1+epl*fs-1;
+         dat(z2,:) = pre_process_data_v1(data(z1, t1:t2));
+         if sum(abs(dat(z2,:))) == 0; art(z1, z2) = NaN; end        
+    end
+    % RUN THROUGH NETWORK
+    %[epl*fs,1,1,block_no] % to delete
+    %size(reshape(dat', [epl*fs,1,1,block_no])) % to delete
+    out1 = activations(resnet, reshape(dat', [epl*fs,1,1,block_no]), 'SM1');
+    %out1 = activations(resnet, reshape(dat', [epl*fs,1,1,block_no])); % to delete
+    out1 = reshape(out1(1,1,:,:), [class_no block_no]);
+    % WINDOW EACH CLASS WITH DIFFERENT LENGTH WINDOW
+    out2 = zeros(size(out1));
+    for z3 = 1:class_no
+        val = w_opt(z3);
+        dum = conv(out1(z3,:), ones(1,val))/val;
+        out2(z3,:) = dum(1+floor(val/2):length(dum)-floor(val/2));
+    end
+    % MAKE DECISION
+    for z4 = 1:block_no
+       dec(z1, z4) = find(out2(:, z4) == max(out2(:, z4)), 1);
+    end
+    dec_prob(z1,:, :) = out2';    
+    
+end
+
+final_dec = dec.*art; % art is a mask that identifies periods of zero EEG
